@@ -38,6 +38,14 @@ import {
 } from "@/components/coach-controls";
 import { Legend } from "@/components/legend";
 
+/** Format seconds to swim time display (e.g. 65.23 → "1:05.23") */
+function formatSwimTime(seconds: number): string {
+  if (seconds < 60) return seconds.toFixed(2);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds - mins * 60;
+  return `${mins}:${secs.toFixed(2).padStart(5, "0")}`;
+}
+
 interface MeetSetupProps {
   team: TeamSummary;
   gender: string;
@@ -135,21 +143,46 @@ export function MeetSetup({
     presets?.[scoringPreset]?.points ||
     [20, 17, 16, 15, 14, 13, 12, 11, 9, 7, 6, 5, 4, 3, 2, 1];
 
-  // Analysis request payload
+  // Analysis request payload — reflects coach adjustments in real time
   const analysisRequest: AnalysisRequest | null = useMemo(() => {
     if (!hasOpponents) return null;
     const eventList = events.filter((e) => enabledEvents.has(e.id));
+    const unavailSet = new Set(unavailableSwimmers);
+    const excludedPairs = new Set(
+      coachConstraints
+        .filter((c) => c.constraint_type === "exclude")
+        .map((c) => `${c.swimmer_id}-${c.event_id}`),
+    );
+
     return {
       home_team_name: team.name,
       home_times: times
-        .filter((t) => enabledEvents.has(t.event_id))
-        .map((t) => ({
-          swimmer_id: t.swimmer_id,
-          swimmer_name: t.swimmer_name,
-          event_id: t.event_id,
-          time_seconds: t.time_seconds,
-          time_display: t.time_display,
-        })),
+        .filter(
+          (t) =>
+            enabledEvents.has(t.event_id) &&
+            !unavailSet.has(t.swimmer_id) &&
+            !excludedPairs.has(`${t.swimmer_id}-${t.event_id}`),
+        )
+        .map((t) => {
+          // Apply time adjustments (event-specific first, then global)
+          const adj =
+            timeAdjustments.find(
+              (a) =>
+                a.swimmer_id === t.swimmer_id && a.event_id === t.event_id,
+            ) ??
+            timeAdjustments.find(
+              (a) =>
+                a.swimmer_id === t.swimmer_id && a.event_id === null,
+            );
+          const secs = adj ? t.time_seconds * adj.multiplier : t.time_seconds;
+          return {
+            swimmer_id: t.swimmer_id,
+            swimmer_name: t.swimmer_name,
+            event_id: t.event_id,
+            time_seconds: Math.round(secs * 100) / 100,
+            time_display: adj ? formatSwimTime(secs) : t.time_display,
+          };
+        }),
       opponent_times: loadedOpponents.flatMap((ot) =>
         ot.times
           .filter((t) => enabledEvents.has(t.event_id))
@@ -175,6 +208,9 @@ export function MeetSetup({
     enabledEvents,
     scoring,
     hasOpponents,
+    unavailableSwimmers,
+    timeAdjustments,
+    coachConstraints,
   ]);
 
   // Fetch scouting brief
@@ -459,30 +495,7 @@ export function MeetSetup({
                     </button>
                   </div>
 
-                  {/* Coach Controls */}
-                  <CoachControls
-                      swimmers={swimmers}
-                      events={events}
-                      enabledEvents={enabledEvents}
-                      timesMatrix={timesMatrix}
-                      constraints={coachConstraints}
-                      timeAdjustments={timeAdjustments}
-                      unavailableSwimmers={unavailableSwimmers}
-                      coachNotes={coachNotes}
-                      onChange={(
-                        constraints,
-                        adjustments,
-                        unavailable,
-                        notes,
-                      ) => {
-                        setCoachConstraints(constraints);
-                        setTimeAdjustments(adjustments);
-                        setUnavailableSwimmers(unavailable);
-                        setCoachNotes(notes);
-                      }}
-                    />
-
-                  {/* Meet Settings */}
+                  {/* Meet Settings — above roster for easy access */}
                   <div className="bg-white rounded-lg border border-slate-200 shadow-[0_1px_3px_0_rgb(0_0_0_/_0.04)] overflow-hidden">
                     <button
                       onClick={() => setSettingsExpanded(!settingsExpanded)}
@@ -567,6 +580,29 @@ export function MeetSetup({
                       </div>
                     )}
                   </div>
+
+                  {/* Coach Controls — Roster */}
+                  <CoachControls
+                    swimmers={swimmers}
+                    events={events}
+                    enabledEvents={enabledEvents}
+                    timesMatrix={timesMatrix}
+                    constraints={coachConstraints}
+                    timeAdjustments={timeAdjustments}
+                    unavailableSwimmers={unavailableSwimmers}
+                    coachNotes={coachNotes}
+                    onChange={(
+                      constraints,
+                      adjustments,
+                      unavailable,
+                      notes,
+                    ) => {
+                      setCoachConstraints(constraints);
+                      setTimeAdjustments(adjustments);
+                      setUnavailableSwimmers(unavailable);
+                      setCoachNotes(notes);
+                    }}
+                  />
                 </div>
 
                 {/* Optimize button — pinned at bottom of sidebar */}
