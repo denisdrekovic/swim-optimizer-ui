@@ -10,6 +10,7 @@ import { Check, Sparkles, Target, Zap, Shield } from "lucide-react";
 import type {
   TeamSummary,
   MeetConfig,
+  MeetDetails,
   OptimizerResult,
   SwimmerTimeRow,
   OpponentTeamData,
@@ -32,6 +33,7 @@ export default function Home() {
   const [opponentTeams, setOpponentTeams] = useState<OpponentTeamData[]>([]);
   const [meetConfig, setMeetConfig] = useState<MeetConfig | null>(null);
   const [result, setResult] = useState<OptimizerResult | null>(null);
+  const [meetDetails, setMeetDetails] = useState<MeetDetails | null>(null);
 
   const currentIdx = STEPS.findIndex((s) => s.key === step);
   const isLanding = step === "team" && !team;
@@ -42,7 +44,7 @@ export default function Home() {
       <header className={`bg-white border-b border-slate-200/80 sticky top-0 z-10 transition-all ${isLanding ? "border-transparent bg-transparent" : ""}`}>
         <div className={`${step === "config" ? "max-w-7xl" : "max-w-5xl"} mx-auto px-6 py-3 flex items-center justify-between transition-all`}>
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-sm">
+            <div className="w-8 h-8 rounded-lg bg-teal-600 flex items-center justify-center shadow-sm">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2 12h4l3-9 6 18 3-9h4" />
               </svg>
@@ -112,7 +114,7 @@ export default function Home() {
       {isLanding && (
         <div className="relative overflow-hidden">
           {/* Gradient background */}
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800" />
+          <div className="absolute inset-0 bg-gradient-to-br from-teal-500 via-blue-600 to-blue-900" />
           {/* Water wave pattern */}
           <div className="absolute inset-0 opacity-10">
             <svg className="absolute bottom-0 w-full" viewBox="0 0 1440 200" fill="none">
@@ -130,7 +132,7 @@ export default function Home() {
               <h2 className="text-3xl sm:text-4xl font-bold text-white tracking-tight leading-tight mb-4">
                 Prepare your team<br />to compete at their best.
               </h2>
-              <p className="text-base text-blue-100 leading-relaxed max-w-lg">
+              <p className="text-base text-cyan-100 leading-relaxed max-w-lg">
                 Matchup intelligence, optimal lineups, and scouting briefs — built for high school swim coaches who want every point.
               </p>
 
@@ -145,7 +147,7 @@ export default function Home() {
                     key={label}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-white text-sm"
                   >
-                    <Icon size={14} className="text-blue-200" />
+                    <Icon size={14} className="text-cyan-200" />
                     {label}
                   </div>
                 ))}
@@ -211,9 +213,10 @@ export default function Home() {
                 times={times}
                 opponentTeams={opponentTeams}
                 onBack={() => setStep("opponents")}
-                onOptimize={(config, optimizerResult) => {
+                onOptimize={(config, optimizerResult, details) => {
                   setMeetConfig(config);
                   setResult(optimizerResult);
+                  setMeetDetails(details);
                   setStep("results");
                 }}
               />
@@ -231,12 +234,15 @@ export default function Home() {
               <Results
                 result={result}
                 config={meetConfig}
+                meetDetails={meetDetails}
+                gender={gender}
                 onBack={() => setStep("config")}
                 onRestart={() => {
                   setStep("team");
                   setTeam(null);
                   setResult(null);
                   setMeetConfig(null);
+                  setMeetDetails(null);
                   setOpponentTeams([]);
                 }}
               />

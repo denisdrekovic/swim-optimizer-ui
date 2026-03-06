@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { Swords, Zap } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Swords, Zap, ChevronDown, ChevronRight } from "lucide-react";
 import type { MatchupAnalysis, EventMatchup, SwimmerMatchup } from "@/lib/api";
 
 interface MatchupBoardProps {
@@ -147,10 +147,14 @@ function EventCard({
   event,
   isSwingEvent,
   homeTeamName,
+  expanded,
+  onToggle,
 }: {
   event: EventMatchup;
   isSwingEvent: boolean;
   homeTeamName: string;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const dc = DIFFICULTY_CONFIG[event.difficulty];
   const totalOppPts = Object.values(event.opponent_projected_points).reduce(
@@ -192,9 +196,17 @@ function EventCard({
           : "border-slate-200"
       }`}
     >
-      {/* Card header */}
-      <div className="px-4 py-2.5 bg-white border-b border-slate-100 flex items-center justify-between">
+      {/* Card header — always visible, clickable */}
+      <button
+        onClick={onToggle}
+        className="w-full px-4 py-2.5 bg-white flex items-center justify-between hover:bg-slate-50/50 transition-colors cursor-pointer"
+      >
         <div className="flex items-center gap-2">
+          {expanded ? (
+            <ChevronDown size={14} className="text-slate-400 flex-shrink-0" />
+          ) : (
+            <ChevronRight size={14} className="text-slate-400 flex-shrink-0" />
+          )}
           {event.is_relay && (
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-500" />
           )}
@@ -214,30 +226,44 @@ function EventCard({
             </span>
           )}
         </div>
-        <div className="text-[11px] text-slate-400">
-          {event.combined_ranked.length} swimmers
+        <div className="flex items-center gap-3">
+          {/* Inline point summary when collapsed */}
+          {!expanded && (
+            <div className="flex items-center gap-1.5 text-[10px] tabular-nums">
+              <span className="font-semibold text-blue-600">{event.home_projected_points}</span>
+              <span className="text-slate-300">–</span>
+              <span className="font-semibold text-slate-500">{totalOppPts}</span>
+            </div>
+          )}
+          <span className="text-[11px] text-slate-400">
+            {event.combined_ranked.length} swimmers
+          </span>
         </div>
-      </div>
+      </button>
 
-      {/* Ranked swimmer list */}
-      <div className="divide-y divide-slate-100">
-        {event.combined_ranked.map((swimmer, i) => (
-          <SwimmerRow
-            key={`${swimmer.swimmer_name}-${swimmer.team_name}-${i}`}
-            swimmer={swimmer}
-            isSwing={closeSwimmers.has(swimmer.swimmer_name)}
-          />
-        ))}
-      </div>
+      {/* Ranked swimmer list — only when expanded */}
+      {expanded && (
+        <>
+          <div className="divide-y divide-slate-100 border-t border-slate-100">
+            {event.combined_ranked.map((swimmer, i) => (
+              <SwimmerRow
+                key={`${swimmer.swimmer_name}-${swimmer.team_name}-${i}`}
+                swimmer={swimmer}
+                isSwing={closeSwimmers.has(swimmer.swimmer_name)}
+              />
+            ))}
+          </div>
 
-      {/* Point summary bar */}
-      <div className="px-4 py-2 bg-slate-50/80 border-t border-slate-100">
-        <PointBar
-          homePoints={event.home_projected_points}
-          opponentPoints={totalOppPts}
-          maxPoints={maxPts}
-        />
-      </div>
+          {/* Point summary bar */}
+          <div className="px-4 py-2 bg-slate-50/80 border-t border-slate-100">
+            <PointBar
+              homePoints={event.home_projected_points}
+              opponentPoints={totalOppPts}
+              maxPoints={maxPts}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -253,6 +279,31 @@ export function MatchupBoard({ analysis, enabledEvents }: MatchupBoardProps) {
     [analysis.swing_events]
   );
 
+  const activeEvents = filteredEvents.filter(
+    (e) => e.difficulty !== "no_entries"
+  );
+
+  // Collapsible state — all collapsed by default
+  const [expandedEvents, setExpandedEvents] = useState<Set<number>>(new Set());
+
+  const toggleEvent = (id: number) => {
+    setExpandedEvents((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const allExpanded = activeEvents.length > 0 && activeEvents.every((e) => expandedEvents.has(e.event_id));
+
+  const toggleAll = () => {
+    if (allExpanded) {
+      setExpandedEvents(new Set());
+    } else {
+      setExpandedEvents(new Set(activeEvents.map((e) => e.event_id)));
+    }
+  };
+
   // Counts
   const dominantCount = filteredEvents.filter(
     (e) => e.difficulty === "dominant"
@@ -263,9 +314,6 @@ export function MatchupBoard({ analysis, enabledEvents }: MatchupBoardProps) {
   const uphillCount = filteredEvents.filter(
     (e) => e.difficulty === "uphill"
   ).length;
-  const activeEvents = filteredEvents.filter(
-    (e) => e.difficulty !== "no_entries"
-  );
 
   return (
     <div className="space-y-4">
@@ -302,6 +350,17 @@ export function MatchupBoard({ analysis, enabledEvents }: MatchupBoardProps) {
               </span>
             </span>
           )}
+          {activeEvents.length > 0 && (
+            <>
+              <span className="w-px h-3 bg-slate-200" />
+              <button
+                onClick={toggleAll}
+                className="text-blue-600 hover:text-blue-700 font-medium"
+              >
+                {allExpanded ? "Collapse all" : "Expand all"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -313,6 +372,8 @@ export function MatchupBoard({ analysis, enabledEvents }: MatchupBoardProps) {
             event={event}
             isSwingEvent={swingSet.has(event.event_name)}
             homeTeamName={analysis.home_team.team_name}
+            expanded={expandedEvents.has(event.event_id)}
+            onToggle={() => toggleEvent(event.event_id)}
           />
         ))}
       </div>

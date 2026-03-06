@@ -8,7 +8,7 @@ import {
   ThermometerSun,
   Activity,
   Sparkles,
-  UserX,
+  Check,
   ChevronDown,
   ChevronUp,
   MessageSquare,
@@ -262,20 +262,20 @@ export function CoachControls({
                   }
                 }}
               >
-                {/* Availability checkbox */}
+                {/* Availability checkbox — checked = included (default) */}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleUnavailable(swimmer.id);
                   }}
-                  className={`w-3.5 h-3.5 rounded border-[1.5px] flex items-center justify-center flex-shrink-0 transition-all ${
+                  className={`w-4 h-4 rounded border-[1.5px] flex items-center justify-center flex-shrink-0 transition-all ${
                     isUnavailable
-                      ? "border-red-300 bg-red-50"
-                      : "border-slate-300 bg-white hover:border-blue-400"
+                      ? "border-slate-300 bg-white hover:border-red-400"
+                      : "border-blue-500 bg-blue-500 hover:bg-blue-600 hover:border-blue-600"
                   }`}
-                  title={isUnavailable ? "Mark available" : "Mark unavailable"}
+                  title={isUnavailable ? "Click to include" : "Click to exclude"}
                 >
-                  {isUnavailable && <UserX size={7} className="text-red-500" />}
+                  {!isUnavailable && <Check size={10} strokeWidth={3} className="text-white" />}
                 </button>
 
                 {/* Name */}

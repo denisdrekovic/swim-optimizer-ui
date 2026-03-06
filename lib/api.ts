@@ -205,6 +205,15 @@ export interface ScoutingBriefResponse {
   ai_available: boolean;
 }
 
+// ── Meet details (for export) ────────────────────────────────────
+
+export interface MeetDetails {
+  meet_name: string;
+  meet_date: string;   // ISO: "2026-03-08"
+  course: string;      // "SCY" | "SCM" | "LCM"
+  facility: string;
+}
+
 // ── API calls ────────────────────────────────────────────────────
 
 export async function searchTeams(
@@ -321,4 +330,158 @@ export async function getScoutingBrief(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
+}
+
+// ── Coach Chat (streaming SSE) ────────────────────────────────────
+
+export interface CoachChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  changes?: ParameterChange[];
+}
+
+export interface ParameterChange {
+  success: boolean;
+  tool: string;
+  type?: "condition" | "unavailable" | "constraint";
+  swimmer_id?: number;
+  swimmer_name?: string;
+  condition?: string;
+  multiplier?: number;
+  unavailable?: boolean;
+  event_id?: number;
+  event_name?: string;
+  constraint_type?: string;
+  detail?: string;
+  error?: string;
+}
+
+export interface CoachChatContext {
+  team_name: string;
+  gender: string;
+  swimmers: {
+    swimmer_id: number;
+    swimmer_name: string;
+    events: { event_id: number; event_name: string; time_seconds: number; time_display: string }[];
+  }[];
+  current_conditions: { swimmer_id: number; condition: string; multiplier: number }[];
+  current_constraints: { swimmer_id: number; event_id: number; constraint_type: string }[];
+  unavailable: number[];
+  opponent_summary: string;
+  optimizer_result: Record<string, unknown> | null;
+}
+
+export function streamCoachChat(
+  messages: { role: string; content: string }[],
+  context: CoachChatContext,
+  callbacks: {
+    onToken: (text: string) => void;
+    onToolCall: (change: ParameterChange) => void;
+    onDone: () => void;
+    onError: (err: string) => void;
+  },
+): AbortController {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/analysis/coach-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages, ...context }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        callbacks.onError(err.detail || `HTTP ${res.status}`);
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        callbacks.onError("No response body");
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let currentEvent = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            try {
+              const parsed = JSON.parse(data);
+              if (currentEvent === "token" && parsed.text) {
+                callbacks.onToken(parsed.text);
+              } else if (currentEvent === "tool_call") {
+                callbacks.onToolCall(parsed as ParameterChange);
+              } else if (currentEvent === "done") {
+                callbacks.onDone();
+              }
+            } catch {
+              // skip malformed JSON
+            }
+            currentEvent = "";
+          }
+        }
+      }
+
+      // If we haven't received a done event, call onDone
+      callbacks.onDone();
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        callbacks.onError((err as Error).message || "Stream failed");
+      }
+    }
+  })();
+
+  return controller;
+}
+
+// ── SD3 Export ────────────────────────────────────────────────────
+
+export async function exportSd3(
+  meetDetails: MeetDetails,
+  teamName: string,
+  gender: string,
+  assignments: { swimmer_name: string; event_name: string; time_seconds: number; time_display: string }[],
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/optimizer/export-sd3`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      meet_name: meetDetails.meet_name,
+      meet_date: meetDetails.meet_date,
+      course: meetDetails.course,
+      facility: meetDetails.facility,
+      team_name: teamName,
+      gender,
+      assignments,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${teamName.replace(/\s+/g, "_")}_entries.sd3`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

@@ -9,6 +9,7 @@ import {
   type TeamSummary,
   type SwimmerTimeRow,
   type MeetConfig,
+  type MeetDetails,
   type OptimizerResult,
   type EventConfig,
   type SwimmerEntry,
@@ -28,7 +29,10 @@ import {
   ChevronRight,
   HelpCircle,
   Users,
+  CalendarDays,
+  Sparkles,
 } from "lucide-react";
+import { AnimatePresence } from "motion/react";
 import { ScoutingBrief } from "@/components/scouting-brief";
 import { MatchupBoard } from "@/components/matchup-board";
 import {
@@ -36,7 +40,9 @@ import {
   type CoachConstraint,
   type TimeAdjustment,
 } from "@/components/coach-controls";
+import { CoachChat } from "@/components/coach-chat";
 import { Legend } from "@/components/legend";
+import type { ParameterChange, CoachChatContext } from "@/lib/api";
 
 /** Format seconds to swim time display (e.g. 65.23 → "1:05.23") */
 function formatSwimTime(seconds: number): string {
@@ -52,7 +58,7 @@ interface MeetSetupProps {
   times: SwimmerTimeRow[];
   opponentTeams: OpponentTeamData[];
   onBack: () => void;
-  onOptimize: (config: MeetConfig, result: OptimizerResult) => void;
+  onOptimize: (config: MeetConfig, result: OptimizerResult, meetDetails: MeetDetails) => void;
 }
 
 export function MeetSetup({
@@ -69,8 +75,15 @@ export function MeetSetup({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const [meetDetailsExpanded, setMeetDetailsExpanded] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Meet details for export
+  const [meetName, setMeetName] = useState("");
+  const [meetDate, setMeetDate] = useState("");
+  const [meetCourse, setMeetCourse] = useState("SCY");
+  const [meetFacility, setMeetFacility] = useState("");
 
   // Coach controls state
   const [coachConstraints, setCoachConstraints] = useState<CoachConstraint[]>(
@@ -79,6 +92,9 @@ export function MeetSetup({
   const [timeAdjustments, setTimeAdjustments] = useState<TimeAdjustment[]>([]);
   const [unavailableSwimmers, setUnavailableSwimmers] = useState<number[]>([]);
   const [coachNotes, setCoachNotes] = useState("");
+
+  // AI Coach chat
+  const [chatOpen, setChatOpen] = useState(false);
 
   const { data: presets } = useQuery({
     queryKey: ["scoring-presets"],
@@ -106,8 +122,10 @@ export function MeetSetup({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [times]);
 
+  // Non-standard HS events — disabled by default (age-group 25y, college 1000/1650)
+  const NON_HS_PATTERNS = /^(25 |1000 |1650 )/;
   const [enabledEvents, setEnabledEvents] = useState<Set<number>>(
-    () => new Set(events.map((e) => e.id)),
+    () => new Set(events.filter((e) => !NON_HS_PATTERNS.test(e.name)).map((e) => e.id)),
   );
 
   const toggleEvent = (id: number) => {
@@ -239,6 +257,115 @@ export function MeetSetup({
     timeAdjustments.length +
     unavailableSwimmers.length;
 
+  // ── Chat context for AI Coach ─────────────────────────────────
+
+  const chatContext: CoachChatContext = useMemo(() => {
+    const swimmerCtx = swimmers.map((s) => {
+      const swimmerTimes = enabledEventList
+        .filter((e) => timesMatrix[s.id]?.[e.id])
+        .map((e) => {
+          const t = timesMatrix[s.id][e.id];
+          return {
+            event_id: e.id,
+            event_name: e.name,
+            time_seconds: t.time_seconds,
+            time_display: t.time_display,
+          };
+        });
+      return {
+        swimmer_id: s.id,
+        swimmer_name: s.name,
+        events: swimmerTimes,
+      };
+    });
+
+    const conditions = timeAdjustments
+      .filter((a) => a.event_id === null)
+      .map((a) => ({
+        swimmer_id: a.swimmer_id,
+        condition: a.reason.toLowerCase() || "custom",
+        multiplier: a.multiplier,
+      }));
+
+    const constraintCtx = coachConstraints.map((c) => ({
+      swimmer_id: c.swimmer_id,
+      event_id: c.event_id,
+      constraint_type: c.constraint_type,
+    }));
+
+    const oppSummary = loadedOpponents
+      .map((o) => `${o.team.name} (${o.times.length} times)`)
+      .join(", ");
+
+    return {
+      team_name: team.name,
+      gender,
+      swimmers: swimmerCtx,
+      current_conditions: conditions,
+      current_constraints: constraintCtx,
+      unavailable: unavailableSwimmers,
+      opponent_summary: oppSummary || "No opponents loaded",
+      optimizer_result: null,
+    };
+  }, [swimmers, enabledEventList, timesMatrix, timeAdjustments, coachConstraints, unavailableSwimmers, loadedOpponents, team.name, gender]);
+
+  // ── Handle parameter changes from AI Coach chat ───────────────
+
+  const handleChatParameterChange = (change: ParameterChange) => {
+    if (!change.success) return;
+
+    if (change.type === "condition" && change.swimmer_id != null) {
+      const multiplier = change.multiplier ?? 1.0;
+      const reason = change.condition ?? "";
+      setTimeAdjustments((prev) => {
+        const filtered = prev.filter(
+          (a) => !(a.swimmer_id === change.swimmer_id && a.event_id === null),
+        );
+        if (Math.abs(multiplier - 1.0) < 0.001) return filtered;
+        return [
+          ...filtered,
+          {
+            swimmer_id: change.swimmer_id!,
+            event_id: null,
+            multiplier,
+            reason: reason.charAt(0).toUpperCase() + reason.slice(1),
+          },
+        ];
+      });
+    } else if (change.type === "unavailable" && change.swimmer_id != null) {
+      if (change.unavailable) {
+        setUnavailableSwimmers((prev) =>
+          prev.includes(change.swimmer_id!) ? prev : [...prev, change.swimmer_id!],
+        );
+        setCoachConstraints((prev) =>
+          prev.filter((c) => c.swimmer_id !== change.swimmer_id),
+        );
+        setTimeAdjustments((prev) =>
+          prev.filter((a) => a.swimmer_id !== change.swimmer_id),
+        );
+      } else {
+        setUnavailableSwimmers((prev) =>
+          prev.filter((id) => id !== change.swimmer_id),
+        );
+      }
+    } else if (change.type === "constraint" && change.swimmer_id != null && change.event_id != null) {
+      setCoachConstraints((prev) => {
+        const filtered = prev.filter(
+          (c) => !(c.swimmer_id === change.swimmer_id && c.event_id === change.event_id),
+        );
+        if (change.constraint_type === "none") return filtered;
+        return [
+          ...filtered,
+          {
+            swimmer_id: change.swimmer_id!,
+            event_id: change.event_id!,
+            constraint_type: change.constraint_type as "lock" | "exclude",
+          },
+        ];
+      });
+    }
+  };
+
   // ── Optimize handler ──────────────────────────────────────────
 
   const handleOptimize = async () => {
@@ -298,7 +425,13 @@ export function MeetSetup({
         unavailable_swimmers: unavailableSwimmers,
       };
       const result = await runOptimizer(config);
-      onOptimize(config, result);
+      const details: MeetDetails = {
+        meet_name: meetName || `${team.name} Meet`,
+        meet_date: meetDate || new Date().toISOString().split("T")[0],
+        course: meetCourse,
+        facility: meetFacility,
+      };
+      onOptimize(config, result, details);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Optimization failed");
     } finally {
@@ -482,6 +615,136 @@ export function MeetSetup({
                     </button>
                   </div>
 
+                  {/* Meet Details — for HyTek/Team Unify export */}
+                  <div className="bg-white rounded-lg border border-slate-200 shadow-[0_1px_3px_0_rgb(0_0_0_/_0.04)] overflow-hidden">
+                    <button
+                      onClick={() => setMeetDetailsExpanded(!meetDetailsExpanded)}
+                      className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <CalendarDays size={12} className="text-slate-400" />
+                        <h3 className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">
+                          Meet Details
+                        </h3>
+                      </div>
+                      {meetDetailsExpanded ? (
+                        <ChevronUp size={14} className="text-slate-400" />
+                      ) : (
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] text-slate-400">
+                            {meetName || "for export"}
+                          </span>
+                          <ChevronDown size={14} className="text-slate-400" />
+                        </div>
+                      )}
+                    </button>
+                    {meetDetailsExpanded && (
+                      <div className="px-4 pb-3 pt-2 border-t border-slate-100">
+                        <div className="space-y-3">
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">
+                              Meet Name
+                            </label>
+                            <input
+                              type="text"
+                              value={meetName}
+                              onChange={(e) => setMeetName(e.target.value)}
+                              placeholder={`${team.name} Dual Meet`}
+                              className="w-full px-2.5 py-1.5 rounded-md border border-slate-200 text-xs bg-white text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none placeholder:text-slate-300"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">
+                              Date
+                            </label>
+                            <input
+                              type="date"
+                              value={meetDate}
+                              onChange={(e) => setMeetDate(e.target.value)}
+                              className="w-full px-2.5 py-1.5 rounded-md border border-slate-200 text-xs bg-white text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">
+                              Course
+                            </label>
+                            <select
+                              value={meetCourse}
+                              onChange={(e) => setMeetCourse(e.target.value)}
+                              className="w-full px-2.5 py-1.5 rounded-md border border-slate-200 text-xs bg-white text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none"
+                            >
+                              <option value="SCY">SCY (25 yards)</option>
+                              <option value="SCM">SCM (25 meters)</option>
+                              <option value="LCM">LCM (50 meters)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-700 mb-1">
+                              Facility
+                            </label>
+                            <input
+                              type="text"
+                              value={meetFacility}
+                              onChange={(e) => setMeetFacility(e.target.value)}
+                              placeholder="Optional"
+                              className="w-full px-2.5 py-1.5 rounded-md border border-slate-200 text-xs bg-white text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none placeholder:text-slate-300"
+                            />
+                          </div>
+                        </div>
+                        <p className="mt-2 text-[10px] text-slate-400">
+                          Used for SD3 export (HyTek / Team Unify)
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Optimizer constraints — always visible */}
+                  <div className="bg-white rounded-lg border border-slate-200 shadow-[0_1px_3px_0_rgb(0_0_0_/_0.04)] px-4 py-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-slate-700">
+                        Max Events / Swimmer
+                      </label>
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4].map((n) => (
+                          <button
+                            key={n}
+                            onClick={() => setMaxIndividual(n)}
+                            className={`w-8 h-8 rounded-md text-xs font-semibold transition-all ${
+                              maxIndividual === n
+                                ? "bg-blue-600 text-white shadow-sm"
+                                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                            }`}
+                          >
+                            {n}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="border-t border-slate-100 pt-3 flex items-center justify-between">
+                      <label className="text-xs font-medium text-slate-700">
+                        Max Swimmers / Event
+                      </label>
+                      <div className="flex items-center gap-1">
+                        {[2, 3, 4, 0].map((n) => (
+                          <button
+                            key={n}
+                            onClick={() => setMaxEntriesPerEvent(n === 0 ? 99 : n)}
+                            className={`h-8 px-2.5 rounded-md text-xs font-semibold transition-all ${
+                              (n === 0 ? maxEntriesPerEvent >= 99 : maxEntriesPerEvent === n)
+                                ? "bg-blue-600 text-white shadow-sm"
+                                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                            }`}
+                          >
+                            {n === 0 ? "No limit" : n}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-slate-400">
+                      HS default: 2 events per swimmer, 4 swimmers per event
+                    </p>
+                  </div>
+
                   {/* Settings & Optimize — single card */}
                   <div className="bg-white rounded-lg border border-slate-200 shadow-[0_1px_3px_0_rgb(0_0_0_/_0.04)] overflow-hidden">
                     {/* Accordion header */}
@@ -533,68 +796,10 @@ export function MeetSetup({
                                 )}
                             </select>
                           </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">
-                              Max Events / Swimmer
-                            </label>
-                            <select
-                              value={maxIndividual}
-                              onChange={(e) =>
-                                setMaxIndividual(Number(e.target.value))
-                              }
-                              className="w-full px-2.5 py-1.5 rounded-md border border-slate-200 text-xs bg-white text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none"
-                            >
-                              <option value={1}>1 individual</option>
-                              <option value={2}>2 individual</option>
-                              <option value={3}>3 individual</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-slate-700 mb-1">
-                              Max Entries / Event
-                            </label>
-                            <select
-                              value={maxEntriesPerEvent}
-                              onChange={(e) =>
-                                setMaxEntriesPerEvent(Number(e.target.value))
-                              }
-                              className="w-full px-2.5 py-1.5 rounded-md border border-slate-200 text-xs bg-white text-slate-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none"
-                            >
-                              <option value={2}>2 entries</option>
-                              <option value={3}>3 entries</option>
-                              <option value={4}>4 entries</option>
-                              <option value={6}>6 entries</option>
-                            </select>
-                          </div>
                         </div>
                       </div>
                     )}
 
-                    {/* Optimize — always visible at bottom of card */}
-                    <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40">
-                      {error && (
-                        <div className="mb-2 px-2.5 py-1.5 bg-red-50 border border-red-200 rounded-md text-[11px] text-red-700">
-                          {error}
-                        </div>
-                      )}
-                      <button
-                        onClick={handleOptimize}
-                        disabled={running || enabledEvents.size === 0}
-                        className="w-full py-2 bg-blue-600 text-white rounded-md text-xs font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-sm"
-                      >
-                        {running ? (
-                          <>
-                            <Loader2 size={13} className="animate-spin" />
-                            Optimizing...
-                          </>
-                        ) : (
-                          <>
-                            <Zap size={13} />
-                            Optimize Lineup
-                          </>
-                        )}
-                      </button>
-                    </div>
                   </div>
 
                   {/* Coach Controls — Roster */}
@@ -728,6 +933,64 @@ export function MeetSetup({
           )}
         </div>
       </div>
+
+      {/* ═══ Floating Action Buttons (bottom-right) ═══ */}
+      <div
+        className={`fixed bottom-6 z-20 flex flex-col items-end gap-3 transition-all duration-300 ${
+          chatOpen ? "right-[416px]" : "right-6"
+        }`}
+      >
+        {/* AI Coach Assistant button */}
+        <button
+          onClick={() => setChatOpen(!chatOpen)}
+          className={`flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm shadow-lg transition-all ${
+            chatOpen
+              ? "bg-gradient-to-r from-violet-600 to-violet-700 text-white hover:from-violet-700 hover:to-violet-800 hover:shadow-xl"
+              : "bg-gradient-to-r from-slate-700 to-slate-800 text-white hover:from-slate-800 hover:to-slate-900 hover:shadow-xl"
+          }`}
+        >
+          <Sparkles size={16} />
+          {chatOpen ? "Close Assistant" : "AI Coach Assistant"}
+        </button>
+
+        {/* Optimize Lineup button */}
+        <button
+          onClick={handleOptimize}
+          disabled={running || enabledEvents.size === 0}
+          className="flex items-center gap-2 px-5 py-3 rounded-full bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold text-sm shadow-lg hover:shadow-xl hover:from-blue-700 hover:to-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        >
+          {running ? (
+            <>
+              <Loader2 size={16} className="animate-spin" />
+              Optimizing...
+            </>
+          ) : (
+            <>
+              <Zap size={16} />
+              Optimize Lineup
+            </>
+          )}
+        </button>
+
+        {/* Error toast */}
+        {error && (
+          <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[11px] text-red-700 max-w-[240px] shadow-sm">
+            {error}
+          </div>
+        )}
+      </div>
+
+      {/* ═══ AI Coach Chat Sidebar ═══ */}
+      <AnimatePresence>
+        {chatOpen && (
+          <CoachChat
+            open={chatOpen}
+            onClose={() => setChatOpen(false)}
+            context={chatContext}
+            onParameterChange={handleChatParameterChange}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

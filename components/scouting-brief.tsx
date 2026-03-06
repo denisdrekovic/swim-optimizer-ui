@@ -290,11 +290,9 @@ export function ScoutingBrief({
           </div>
         </div>
 
-        {/* AI narrative prose */}
+        {/* Visual summary bullets (concise) */}
         <div className="px-5 py-4">
-          <div className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-            {narrative}
-          </div>
+          <ComputedSummary analysis={analysis} />
         </div>
       </div>
     );
